@@ -17,9 +17,11 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 
-from integridad.views import health  # <-- importa la vista
+from integridad.views import health, registrar_evento
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("health/", health),  # <-- añade esta línea
+    path("health/", health),
+    path("integridad/event/", registrar_evento),
+
 ]
