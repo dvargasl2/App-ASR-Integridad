@@ -1,157 +1,327 @@
-# ASR de Integridad – Infraestructura, Implementación y Pruebas
+# ASR de Integridad – Guía Completa del Experimento
 
-Este proyecto implementa y prueba un **Atributo de Calidad (ASR) de Integridad de Datos** en un sistema basado en Django.  
-El experimento se ejecuta en **AWS usando Terraform**, y las pruebas de carga e integridad se realizan usando **Locust**.
-
----
-
-## 1. ASR de Integridad (Descripción)
-
-> Yo como **Administrador del sistema**,  
-> dado que el sistema recibe y almacena información de pedidos, pagos y devoluciones entre diferentes microservicios,  
-> cuando se intercambien o registren datos críticos,  
-> quiero que el sistema valide que la información sea coherente y completa antes de guardarla,  
-> para evitar inconsistencias o registros corruptos que afecten el funcionamiento general.  
-> Esto debe cumplirse en el **100 % de los casos**, garantizando la integridad de los datos entre microservicios y base de datos.
-
-Este ASR se valida con:
-- Un endpoint `/health/` para verificar disponibilidad.
-- Un endpoint `/integridad/event/` que valida datos **correctos** vs **corruptos**.
-- Pruebas masivas de carga enviando ambos tipos de datos.
+Este documento explica **cómo crear la infraestructura**, **preparar las instancias**, **entender el código que permite verificar el ASR**, y finalmente **cómo ejecutar el experimento completo** (app + locust).
 
 ---
 
-## 2. Arquitectura del Experimento
+# 1. Objetivo del ASR
 
-Terraform crea **3 instancias EC2**:
+El sistema debe **validar la coherencia e integridad de la información** recibida entre microservicios antes de almacenarla o procesarla, garantizando que **nunca se registren datos corruptos**.
 
-| Instancia | Propósito | Puerto |
-|----------|-----------|--------|
+Se valida mediante:
+- `/health/` → confirma disponibilidad.
+- `/integridad/event/` → valida datos correctos vs corruptos.
+- Locust → envía miles de requests válidos y corruptos.
+
+---
+
+# 2. Arquitectura General del Experimento
+
+El experimento utiliza **tres instancias EC2 en AWS**:
+
+| Instancia | Rol | Puertos |
+|----------|------|---------|
 | `int-app` | Ejecuta Django + ASR | 8080 |
-| `int-db` | PostgreSQL configurado | 5432 |
-| `int-jmeter` | Corre Locust para pruebas | 8089 (UI) |
-
-**Componentes clave:**
-
-- Django con validaciones estrictas.
-- PostgreSQL configurado automáticamente via user-data.
-- Clonado automático del repositorio en la instancia `app`.
-- Locust con 3 tipos de tráfico:
-  - Requests válidos
-  - Requests con payload corrupto tipo diccionario
-  - Requests corruptos tipo string
+| `int-db` | PostgreSQL | 5432 |
+| `int-locust` | Cliente Locust para pruebas | 8089 |
 
 ---
 
-## 3. Requisitos Previos
+# 3. CREACIÓN DE INSTANCIAS (DOS MÉTODOS)
 
-1. **AWS CLI instalado y configurado**
-aws configure
-2. **Terraform instalado**
-3. **Llave SSH de AWS** (ejemplo: `vockey.pem`)
-4. **Repositorio correctamente subido a GitHub:**
-https://github.com/dvargasl2/App-ASR-Integridad
+Aquí tienes ambas opciones para crear la infraestructura:
+
 ---
 
-## 4. Despliegue de Infraestructura con Terraform
+# 3.1 MÉTODO A — CREACIÓN CON TERRAFORM (Automatizado)
 
-### 4.1. Clonar el repositorio y entrar al proyecto
+Este método crea automáticamente:
+
+- 1 instancia app  
+- 1 instancia db  
+- 1 instancia jmeter/locust  
+- Seguridad, puertos, user-data, carpetas, etc.
+
+## 3.1.1 Clonar el repositorio
+```
 git clone https://github.com/dvargasl2/App-ASR-Integridad.git
 cd App-ASR-Integridad
-### 4.2. Inicializar Terraform
+```
+
+## 3.1.2 Inicializar Terraform
+```
 terraform init
-### 4.3. Revisar el plan
-terraform plan -var=“key_name=vockey”
-### 4.4. Aplicar el despliegue
-terraform apply -var=“key_name=vockey”
-Responder `yes`.
+```
 
-### 4.5. Obtener las IPs públicas
+## 3.1.3 Revisar el plan
+```
+terraform plan -var="key_name=vockey"
+```
+
+## 3.1.4 Aplicar despliegue
+```
+terraform apply -var="key_name=vockey"
+```
+
+## 3.1.5 Obtener IPs públicas
+```
 terraform output
+```
 
-Ejemplo de lo que devuelve:
-app_public_ip = “35.175.171.75”
-jmeter_public_ip = “54.198.105.209”
-db_public_ip = “3.80.177.165”
+Ejemplo:
+```
+app_public_ip = "35.175.171.75"
+jmeter_public_ip = "54.198.105.209"
+db_public_ip = "3.80.177.165"
+```
 
----
-
-## 5. Verificar que la App se Levantó Correctamente
-
-Abrir en navegador: http://APP_PUBLIC_IP:8080/health/
-Debe responder:
-{“status”:“ok”,“message”:“ASR Integridad online”}
+Si Terraform no funciona (por falta de espacio en AWS CloudShell), usa el método manual.
 
 ---
 
-## 6. Ejecución de Pruebas de Integridad con Locust
+# 3.2 MÉTODO B — CREACIÓN MANUAL EN AWS (Sin Terraform)
 
-### 6.1. Conectarse a la instancia de pruebas
-ssh -i ~/Downloads/vockey.pem ubuntu@JEMTER_PUBLIC_IP
-### 6.2. Activar entorno virtual de Locust
+---
+
+## 3.2.1 Instancia APP (Django)
+
+- AMI: Ubuntu 24.04 LTS  
+- Tipo: t2.nano  
+- Disco: 8 GB  
+- Puertos inbound: 22, 8080  
+- Nombre: `int-app`
+
+---
+
+## 3.2.2 Instancia DB (PostgreSQL)
+
+- AMI: Ubuntu 24.04  
+- Tipo: t2.nano  
+- Disco: 8 GB  
+- Puertos inbound: 22, 5432  
+- Nombre: `int-db`
+
+Instalar PostgreSQL:
+```
+sudo apt update -y
+sudo apt install -y postgresql postgresql-contrib
+```
+
+Configurar PostgreSQL:
+```
+sudo -u postgres psql -c "CREATE USER appuser WITH PASSWORD 'appPass';"
+sudo -u postgres createdb -O appuser appdb
+```
+
+---
+
+## 3.2.3 Instancia LOCUST
+
+- AMI: Ubuntu 24.04  
+- Tipo: t2.nano  
+- Puertos inbound: 22, 8089  
+- Nombre: `int-locust`
+
+---
+
+# 4. PREPARACIÓN DE LAS INSTANCIAS
+
+# 4.1 Preparar la instancia APP (Django)
+
+Conectarse:
+```bash
+ssh -i vockey.pem ubuntu@APP_PUBLIC_IP
+```
+
+Crear carpeta y clonar repo:
+```bash
+sudo mkdir -p /labs
+sudo chown ubuntu:ubuntu /labs
+cd /labs
+git clone https://github.com/dvargasl2/App-ASR-Integridad.git
+cd App-ASR-Integridad/App-ASR-Integridad
+```
+
+Crear entorno virtual:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+Instalar dependencias (Ubuntu 24.04 requiere `--break-system-packages`):
+```bash
+pip install --upgrade pip --break-system-packages
+pip install -r requirements.txt --break-system-packages
+```
+
+---
+
+# 4.2 Preparar la instancia LOCUST
+
+Conectarse:
+```bash
+ssh -i vockey.pem ubuntu@LOCUST_PUBLIC_IP
+```
+
+Instalar dependencias:
+```bash
+sudo apt update -y
+sudo apt install -y python3-pip python3-venv git
+```
+
+Crear entorno virtual:
+```bash
+python3 -m venv ~/locust-venv
 source ~/locust-venv/bin/activate
-Si no existe:
-python3 -m venv locust-venv
-source locust-venv/bin/activate
-pip install locust
-### 6.3. Entrar al proyecto
-cd /labs/App-ASR-Integridad/App-ASR-Integridad
-### 6.4. Ejecutar Locust en modo UI
-locust -f locustfile.py –host http://APP_PUBLIC_IP:8080
-Verás: Starting web interface at http://0.0.0.0:8089
-### 6.5. Abrir la interfaz de Locust
+pip install --upgrade pip --break-system-packages
+pip install locust --break-system-packages
+```
 
-En tu PC abre: http://JEMTER_PUBLIC_IP:8089
+### (Opcional pero recomendado) Actualizar Locust a la última versión
 
-### 6.6. Configurar valores en la interfaz
+Una vez instalado Locust, puedes actualizarlo fácilmente dentro del entorno virtual:
 
-- Number of users: `100`
-- Ramp up: `5`
-- Host: `http://APP_PUBLIC_IP:8080`
-- Run time: `1m` (opcional)
+```bash
+source ~/locust-venv/bin/activate
+pip install --upgrade pip --break-system-packages
+pip install --upgrade locust --break-system-packages
+```
 
-Clic **START**.
+Verifica la versión instalada:
+
+```bash
+locust --version
+```
+
+Si aparece algún error por restricciones de Ubuntu, usa:
+
+```bash
+pip install -U locust --break-system-packages --force-reinstall
+```
+
+Clonar el repositorio:
+```bash
+sudo mkdir -p /labs
+sudo chown ubuntu:ubuntu /labs
+cd /labs
+git clone https://github.com/dvargasl2/App-ASR-Integridad.git
+```
 
 ---
 
-## 7. Exportar Resultados
+# 5. EXPLICACIÓN DEL CÓDIGO QUE GARANTIZA EL ASR
 
-Locust genera automáticamente:
+## 5.1. `views.py` – Validación estricta de integridad
 
-- `asr_integridad_stats.csv`
-- `asr_integridad_failures.csv`
-- `asr_integridad_exceptions.csv`
-- `asr_integridad_stats_history.csv`
+El endpoint `/integridad/event/`:
+
+- valida campos obligatorios:  
+  `pedido_id`, `monto`, `estado`, `tipo`
+- valida tipos de datos correctos
+- valida valores permitidos del estado
+- retorna 400 si algo es corrupto
+- retorna 200 si el evento es válido
+
+Esto garantiza el ASR porque **ningún dato erróneo entra al sistema**.
+
+---
+
+## 5.2. `locustfile.py` – Generación de carga y datos corruptos
+
+Locust envía 3 tipos de tráfico:
+
+1. **Eventos válidos**
+2. **Eventos corruptos tipo diccionario**
+3. **Eventos corruptos tipo string**
+
+Esto permite demostrar:
+- qué porcentaje de tráfico inválido es rechazado
+- que el sistema sigue funcionando correctamente bajo carga
+- que no se corrompe la base de datos
+
+---
+
+## 5.3. Otras piezas del proyecto
+
+- `config/settings.py` → habilita `ALLOWED_HOSTS`
+- `urls.py` → conecta `/health/` y `/integridad/event/`
+- `requirements.txt` → dependencias
+- `deployment.tf` → infraestructura (**opcional si se usa manual**)
+
+---
+
+# 6. EJECUTAR LA APLICACIÓN (INSTANCIA APP)
+
+Activar entorno virtual:
+```bash
+cd /labs/App-ASR-Integridad/App-ASR-Integridad
+source venv/bin/activate
+```
+
+Ejecutar servidor:
+```bash
+python3 manage.py runserver 0.0.0.0:8080
+```
+
+Verificar:
+```
+http://APP_PUBLIC_IP:8080/health/
+```
+
+---
+
+# 7. EJECUTAR LAS PRUEBAS (INSTANCIA LOCUST)
+
+Activar entorno virtual:
+```bash
+source ~/locust-venv/bin/activate
+```
+
+Entrar al proyecto:
+```bash
+cd /labs/App-ASR-Integridad/App-ASR-Integridad
+```
+
+Ejecutar Locust:
+```bash
+locust -f locustfile.py --host http://APP_PUBLIC_IP:8080
+```
+
+Abrir interfaz desde tu PC:
+```
+http://LOCUST_PUBLIC_IP:8089
+```
+
+Configurar:
+- **Number of users:** 100  
+- **Spawn rate:** 5  
+- **Host:** http://APP_PUBLIC_IP:8080
+
+Clic **Start**.
+
+---
+
+# 8. EXPORTAR RESULTADOS
+
+Locust genera:
+```
+asr_integridad_stats.csv
+asr_integridad_failures.csv
+asr_integridad_exceptions.csv
+asr_integridad_stats_history.csv
+```
 
 Para descargarlos:
-scp -i ~/Downloads/vockey.pem 
-ubuntu@JEMTER_PUBLIC_IP:/labs/App-ASR-Integridad/App-ASR-Integridad/asr_integridad_*.csv 
-~/Downloads/
+```bash
+scp -i vockey.pem ubuntu@LOCUST_PUBLIC_IP:/labs/App-ASR-Integridad/App-ASR-Integridad/asr_integridad_*.csv ~/Downloads/
+```
 
 ---
 
-## 8. Limpieza de Infraestructura
-terraform destroy -var=“key_name=vockey”
+# 9. OBJETIVO DEL EXPERIMENTO
 
----
-
-## 9. Estructura del Proyecto
-App-ASR-Integridad/
-├── config/
-├── integridad/
-├── locustfile.py
-├── deployment.tf
-├── requirements.txt
-├── README.md
-└── manage.py
-
----
-
-## 10. Objetivo del Experimento
-
-El experimento valida que:
-
-- El sistema **acepta datos válidos**.
-- El sistema **rechaza datos corruptos**.
-- No se generan inconsistencias en la base de datos.
-- El ASR se cumple incluso bajo alta concurrencia.
+✔ El sistema acepta datos válidos  
+✔ El sistema rechaza datos corruptos  
+✔ No se genera inconsistencia en la BD  
+✔ Todo sigue funcionando bajo carga  
+✔ El ASR de integridad se cumple al 100%
