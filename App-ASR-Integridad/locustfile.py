@@ -1,5 +1,6 @@
 from locust import HttpUser, task, between
 import random
+import json
 
 class IntegridadUser(HttpUser):
     wait_time = between(0.5, 2.0)
@@ -14,13 +15,12 @@ class IntegridadUser(HttpUser):
 
     def _payload_corrupto(self):
         # Varias formas de “romper” la integridad
-        casos = [
+        return random.choice([
             {},  # sin campos
             {"pedido_id": "abc", "monto": -10},  # tipos y valores inválidos
             {"tipo": "pago"},  # faltan campos
             "no-es-json",  # payload totalmente roto
-        ]
-        return random.choice(casos)
+        ])
 
     @task(3)
     def enviar_evento_valido(self):
@@ -38,23 +38,30 @@ class IntegridadUser(HttpUser):
     def enviar_evento_corrupto(self):
         payload = self._payload_corrupto()
 
-        # Caso especial: cuando el payload no es JSON válido
+        # Caso 1: payload es un string totalmente roto -> lo mandamos tal cual como "JSON"
         if isinstance(payload, str):
-            data = payload
-            headers = {"Content-Type": "application/json"}
+            with self.client.post(
+                "/integridad/event/",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                name="POST /integridad/event/ (corrupto-string)",
+                catch_response=True,
+            ) as resp:
+                if resp.status_code != 400:
+                    resp.failure(
+                        f"Evento corrupto (string) NO fue rechazado correctamente: "
+                        f"{resp.status_code}, body={resp.text}"
+                    )
         else:
-            data = self.client._serialize_json(payload)
-            headers = {"Content-Type": "application/json"}
-
-        with self.client.post(
-            "/integridad/event/",
-            data=data,
-            headers=headers,
-            name="POST /integridad/event/ (corrupto)",
-            catch_response=True,
-        ) as resp:
-            # Aquí lo ESPERADO es 400 siempre
-            if resp.status_code != 400:
-                resp.failure(
-                    f"Evento corrupto NO fue rechazado correctamente: {resp.status_code}, body={resp.text}"
-                )
+            # Caso 2: dict incompleto / con tipos malos -> Locust se encarga del JSON
+            with self.client.post(
+                "/integridad/event/",
+                json=payload,
+                name="POST /integridad/event/ (corrupto-dict)",
+                catch_response=True,
+            ) as resp:
+                if resp.status_code != 400:
+                    resp.failure(
+                        f"Evento corrupto (dict) NO fue rechazado correctamente: "
+                        f"{resp.status_code}, body={resp.text}"
+                    )
